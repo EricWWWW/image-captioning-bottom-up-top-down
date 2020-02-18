@@ -89,12 +89,6 @@ This command will create the following files -
 *   A JSON file for each split with a list of N_c * I caption lengths. The ith value is the length of the ith caption, which corresponds to the i // N_cth image.
 *   A JSON file which contains the word_map, the word-to-index dictionary.
 
-Next, go to nlg_eval_master folder and type the following two commands:
-```bash
-pip install -e .
-nlg-eval --setup
-```
-This will install all the files needed for evaluation.
 
 ##  Training 
 
