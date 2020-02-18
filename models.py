@@ -5,6 +5,7 @@ from torch.nn.utils.weight_norm import weight_norm
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+
 class Attention(nn.Module):
     """
     Attention Network.
@@ -67,7 +68,7 @@ class DecoderWithAttention(nn.Module):
 
         self.embedding = nn.Embedding(vocab_size, embed_dim)  # embedding layer
         self.dropout = nn.Dropout(p=self.dropout)
-        self.top_down_attention = nn.LSTMCell(embed_dim + features_dim + decoder_dim, decoder_dim, bias=True) # top down attention LSTMCell
+        self.top_down_attention = nn.LSTMCell(embed_dim + features_dim + decoder_dim, decoder_dim, bias=True)  # top down attention LSTMCell
         self.language_model = nn.LSTMCell(features_dim + decoder_dim, decoder_dim, bias=True)  # language model LSTMCell
         self.fc1 = weight_norm(nn.Linear(decoder_dim, vocab_size))
         self.fc = weight_norm(nn.Linear(decoder_dim, vocab_size))  # linear layer to find scores over vocabulary
@@ -81,14 +82,14 @@ class DecoderWithAttention(nn.Module):
         self.fc.bias.data.fill_(0)
         self.fc.weight.data.uniform_(-0.1, 0.1)
 
-    def init_hidden_state(self,batch_size):
+    def init_hidden_state(self, batch_size):
         """
         Creates the initial hidden and cell states for the decoder's LSTM based on the encoded images.
         :param encoder_out: encoded images, a tensor of dimension (batch_size, num_pixels, encoder_dim)
         :return: hidden state, cell state
         """
-        h = torch.zeros(batch_size,self.decoder_dim).to(device)  # (batch_size, decoder_dim)
-        c = torch.zeros(batch_size,self.decoder_dim).to(device)
+        h = torch.zeros(batch_size, self.decoder_dim).to(device)  # (batch_size, decoder_dim)
+        c = torch.zeros(batch_size, self.decoder_dim).to(device)
         return h, c
 
     def forward(self, image_features, encoded_captions, caption_lengths):
@@ -118,7 +119,7 @@ class DecoderWithAttention(nn.Module):
         # Initialize LSTM state
         h1, c1 = self.init_hidden_state(batch_size)  # (batch_size, decoder_dim)
         h2, c2 = self.init_hidden_state(batch_size)  # (batch_size, decoder_dim)
-        
+
         # We won't decode at the <end> position, since we've finished generating as soon as we generate <end>
         # So, decoding lengths are actual lengths - 1
         decode_lengths = (caption_lengths - 1).tolist()
@@ -126,22 +127,22 @@ class DecoderWithAttention(nn.Module):
         # Create tensors to hold word predicion scores
         predictions = torch.zeros(batch_size, max(decode_lengths), vocab_size).to(device)
         predictions1 = torch.zeros(batch_size, max(decode_lengths), vocab_size).to(device)
-        
+
         # At each time-step, pass the language model's previous hidden state, the mean pooled bottom up features and
-        # word embeddings to the top down attention model. Then pass the hidden state of the top down model and the bottom up 
+        # word embeddings to the top down attention model. Then pass the hidden state of the top down model and the bottom up
         # features to the attention block. The attention weighed bottom up features and hidden state of the top down attention model
-        # are then passed to the language model 
+        # are then passed to the language model
         for t in range(max(decode_lengths)):
+            # 保证只处理到生成<eos>停止,因为是从大到小排序，所以较短的句子以后不会再更新
             batch_size_t = sum([l > t for l in decode_lengths])
-            h1,c1 = self.top_down_attention(
-                torch.cat([h2[:batch_size_t],image_features_mean[:batch_size_t],embeddings[:batch_size_t, t, :]], dim=1),(h1[:batch_size_t], c1[:batch_size_t]))
-            attention_weighted_encoding = self.attention(image_features[:batch_size_t],h1[:batch_size_t])
+            h1, c1 = self.top_down_attention(
+                torch.cat([h2[:batch_size_t], image_features_mean[:batch_size_t], embeddings[:batch_size_t, t, :]], dim=1), (h1[:batch_size_t], c1[:batch_size_t]))
+            attention_weighted_encoding = self.attention(image_features[:batch_size_t], h1[:batch_size_t])
             preds1 = self.fc1(self.dropout(h1))
-            h2,c2 = self.language_model(
-                torch.cat([attention_weighted_encoding[:batch_size_t],h1[:batch_size_t]], dim=1),
-                (h2[:batch_size_t], c2[:batch_size_t]))
+            h2, c2 = self.language_model(
+                torch.cat([attention_weighted_encoding[:batch_size_t], h1[:batch_size_t]], dim=1), (h2[:batch_size_t], c2[:batch_size_t]))
             preds = self.fc(self.dropout(h2))  # (batch_size_t, vocab_size)
             predictions[:batch_size_t, t, :] = preds
             predictions1[:batch_size_t, t, :] = preds1
 
-        return predictions, predictions1,encoded_captions, decode_lengths, sort_ind
+        return predictions, predictions1, encoded_captions, decode_lengths, sort_ind

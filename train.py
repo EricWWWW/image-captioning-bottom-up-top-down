@@ -6,9 +6,14 @@ import torchvision.transforms as transforms
 from torch import nn
 from torch.nn.utils.rnn import pack_padded_sequence
 from models import DecoderWithAttention
-from datasets import *
+from data_loader import *
 from utils import *
 from nltk.translate.bleu_score import corpus_bleu
+from torch.utils.tensorboard import SummaryWriter
+
+# import multiprocessing  # 解决vscode 远程多线程报错bug
+# multiprocessing.set_start_method('spawn', True)
+
 
 # Data parameters
 data_folder = 'final_dataset'  # folder with data files saved by create_input_files.py
@@ -27,7 +32,7 @@ start_epoch = 0
 epochs = 50  # number of epochs to train for (if early stopping is not triggered)
 epochs_since_improvement = 0  # keeps track of number of epochs since there's been an improvement in validation BLEU
 batch_size = 100
-workers = 1  # for data-loading; right now, only 1 works with h5py
+workers = 0  # for data-loading; right now, only 0 works with h5py
 best_bleu4 = 0.  # BLEU-4 score right now
 print_freq = 100  # print training/validation stats every __ batches
 checkpoint = None  # path to checkpoint, None if none
@@ -38,7 +43,9 @@ def main():
     Training and validation.
     """
 
-    global best_bleu4, epochs_since_improvement, checkpoint, start_epoch,data_name, word_map
+    global best_bleu4, epochs_since_improvement, checkpoint, start_epoch, data_name, word_map
+
+    writer = SummaryWriter()
 
     # Read word map
     word_map_file = os.path.join(data_folder, 'WORDMAP_' + data_name + '.json')
@@ -62,7 +69,7 @@ def main():
         best_bleu4 = checkpoint['bleu-4']
         decoder = checkpoint['decoder']
         decoder_optimizer = checkpoint['decoder_optimizer']
-       
+
     # Move to GPU, if available
     decoder = decoder.to(device)
 
@@ -86,20 +93,31 @@ def main():
             break
         if epochs_since_improvement > 0 and epochs_since_improvement % 8 == 0:
             adjust_learning_rate(decoder_optimizer, 0.8)
-    
+
         # One epoch's training
-        train(train_loader=train_loader,
-              decoder=decoder,
-              criterion_ce = criterion_ce,
-              criterion_dis=criterion_dis,
-              decoder_optimizer=decoder_optimizer,
-              epoch=epoch)
+        losses, top5accs = train(train_loader=train_loader,
+                                 decoder=decoder,
+                                 criterion_ce=criterion_ce,
+                                 criterion_dis=criterion_dis,
+                                 decoder_optimizer=decoder_optimizer,
+                                 epoch=epoch)
+
+        writer.add_scalar('Train/loss.val', losses.val, epoch)
+        writer.add_scalar('Train/loss.avg', losses.avg, epoch)
+        writer.add_scalar('Train/Top-5 Accuracy.val', top5accs.val, epoch)
+        writer.add_scalar('Train/Top-5 Accuracy.avg', top5accs.avg, epoch)
 
         # One epoch's validation
-        recent_bleu4 = validate(val_loader=val_loader,
-                                decoder=decoder,
-                                criterion_ce=criterion_ce,
-                                criterion_dis=criterion_dis)
+        recent_bleu4, losses, top5accs = validate(val_loader=val_loader,
+                                                  decoder=decoder,
+                                                  criterion_ce=criterion_ce,
+                                                  criterion_dis=criterion_dis)
+
+        writer.add_scalar('Val/bleu4', recent_bleu4, epoch)
+        writer.add_scalar('Val/loss.val', losses.val, epoch)
+        writer.add_scalar('Val/loss.avg', losses.avg, epoch)
+        writer.add_scalar('Val/Top-5 Accuracy.val', top5accs.val, epoch)
+        writer.add_scalar('Val/Top-5 Accuracy.avg', top5accs.avg, epoch)
 
         # Check if there was an improvement
         is_best = recent_bleu4 > best_bleu4
@@ -111,7 +129,7 @@ def main():
             epochs_since_improvement = 0
 
         # Save checkpoint
-        save_checkpoint(data_name, epoch, epochs_since_improvement, decoder,decoder_optimizer, recent_bleu4, is_best)
+        save_checkpoint(data_name, epoch, epochs_since_improvement, decoder, decoder_optimizer, recent_bleu4, is_best)
 
 
 def train(train_loader, decoder, criterion_ce, criterion_dis, decoder_optimizer, epoch):
@@ -144,34 +162,36 @@ def train(train_loader, decoder, criterion_ce, criterion_dis, decoder_optimizer,
         caplens = caplens.to(device)
 
         # Forward prop.
-        scores, scores_d,caps_sorted, decode_lengths, sort_ind = decoder(imgs, caps, caplens)
-        
-        #Max-pooling across predicted words across time steps for discriminative supervision
+        scores, scores_d, caps_sorted, decode_lengths, sort_ind = decoder(imgs, caps, caplens)
+
+        # Max-pooling across predicted words across time steps for discriminative supervision
         scores_d = scores_d.max(1)[0]
 
         # Since we decoded starting with <start>, the targets are all words after <start>, up to <end>
         targets = caps_sorted[:, 1:]
-        targets_d = torch.zeros(scores_d.size(0),scores_d.size(1)).to(device)
+        # targets_d = torch.zeros(scores_d.size(0), scores_d.size(1)).to(device)
+        targets_d = torch.zeros_like(scores_d).to(device)
         targets_d.fill_(-1)
 
         for length in decode_lengths:
-            targets_d[:,:length-1] = targets[:,:length-1]
+            targets_d[:, :length-1] = targets[:, :length-1]
 
         # Remove timesteps that we didn't decode at, or are pads
         # pack_padded_sequence is an easy trick to do this
-        scores, _ = pack_padded_sequence(scores, decode_lengths, batch_first=True)
-        targets, _ = pack_padded_sequence(targets, decode_lengths, batch_first=True)
+        scores = pack_padded_sequence(scores, decode_lengths, batch_first=True)[0]
+        targets = pack_padded_sequence(targets, decode_lengths, batch_first=True)[0]
 
         # Calculate loss
-        loss_d = criterion_dis(scores_d,targets_d.long())
+        # 原论文中没有 loss_d ，作者解释是看了大量论文后自己添加的权重分布(weight distribution)
+        loss_d = criterion_dis(scores_d, targets_d.long())
         loss_g = criterion_ce(scores, targets)
         loss = loss_g + (10 * loss_d)
-        
+
         # Back prop.
         decoder_optimizer.zero_grad()
         loss.backward()
-	
-        # Clip gradients when they are getting too large
+
+        # Clip gradients when they are getting too large  梯度裁剪
         torch.nn.utils.clip_grad_norm_(filter(lambda p: p.requires_grad, decoder.parameters()), 0.25)
 
         # Update weights
@@ -194,7 +214,10 @@ def train(train_loader, decoder, criterion_ce, criterion_dis, decoder_optimizer,
                   'Top-5 Accuracy {top5.val:.3f} ({top5.avg:.3f})'.format(epoch, i, len(train_loader),
                                                                           batch_time=batch_time,
                                                                           data_time=data_time, loss=losses,
+
+
                                                                           top5=top5accs))
+    return losses, top5accs
 
 
 def validate(val_loader, decoder, criterion_ce, criterion_dis):
@@ -218,8 +241,8 @@ def validate(val_loader, decoder, criterion_ce, criterion_dis):
     hypotheses = list()  # hypotheses (predictions)
 
     # Batches
-    with torch.no_grad(): 
-        for i, (imgs, caps, caplens,allcaps) in enumerate(val_loader):
+    with torch.no_grad():
+        for i, (imgs, caps, caplens, allcaps) in enumerate(val_loader):
 
             # Move to device, if available
             imgs = imgs.to(device)
@@ -227,26 +250,26 @@ def validate(val_loader, decoder, criterion_ce, criterion_dis):
             caplens = caplens.to(device)
 
             scores, scores_d, caps_sorted, decode_lengths, sort_ind = decoder(imgs, caps, caplens)
-            
-            #Max-pooling across predicted words across time steps for discriminative supervision
+
+            # Max-pooling across predicted words across time steps for discriminative supervision
             scores_d = scores_d.max(1)[0]
 
             # Since we decoded starting with <start>, the targets are all words after <start>, up to <end>
             targets = caps_sorted[:, 1:]
-            targets_d = torch.zeros(scores_d.size(0),scores_d.size(1)).to(device)
-            targets_d.fill_(-1)
+            # targets_d = torch.zeros(scores_d.size(0), scores_d.size(1)).to(device)
+            targets_d = torch.zeros_like(scores_d).to(device)
 
             for length in decode_lengths:
-                targets_d[:,:length-1] = targets[:,:length-1]
+                targets_d[:, :length-1] = targets[:, :length-1]
 
             # Remove timesteps that we didn't decode at, or are pads
             # pack_padded_sequence is an easy trick to do this
             scores_copy = scores.clone()
-            scores, _ = pack_padded_sequence(scores, decode_lengths, batch_first=True)
-            targets, _ = pack_padded_sequence(targets, decode_lengths, batch_first=True)
+            scores = pack_padded_sequence(scores, decode_lengths, batch_first=True)[0]
+            targets = pack_padded_sequence(targets, decode_lengths, batch_first=True)[0]
 
             # Calculate loss
-            loss_d = criterion_dis(scores_d,targets_d.long())
+            loss_d = criterion_dis(scores_d, targets_d.long())
             loss_g = criterion_ce(scores, targets)
             loss = loss_g + (10 * loss_d)
 
@@ -270,16 +293,16 @@ def validate(val_loader, decoder, criterion_ce, criterion_dis):
             # references = [[ref1a, ref1b, ref1c], [ref2a, ref2b], ...], hypotheses = [hyp1, hyp2, ...]
 
             # References
-            allcaps = allcaps[sort_ind]  # because images were sorted in the decoder
+            allcaps = allcaps[sort_ind]  # because images were sorted in the decoder(batch_size * captions_per_image * max_caption_len + 2)
             for j in range(allcaps.shape[0]):
                 img_caps = allcaps[j].tolist()
                 img_captions = list(
                     map(lambda c: [w for w in c if w not in {word_map['<start>'], word_map['<pad>']}],
-                        img_caps))  # remove <start> and pads
+                        img_caps))  # remove <start> and <pad> and leave <eos>
                 references.append(img_captions)
 
             # Hypotheses
-            _, preds = torch.max(scores_copy, dim=2)
+            _, preds = torch.max(scores_copy, dim=2)  # 找出最大概率的单词
             preds = preds.tolist()
             temp_preds = list()
             for j, p in enumerate(preds):
@@ -291,7 +314,7 @@ def validate(val_loader, decoder, criterion_ce, criterion_dis):
 
     # Calculate BLEU-4 scores
     bleu4 = corpus_bleu(references, hypotheses)
-    bleu4 = round(bleu4,4)
+    bleu4 = round(bleu4, 4)
 
     print(
         '\n * LOSS - {loss.avg:.3f}, TOP-5 ACCURACY - {top5.avg:.3f}, BLEU-4 - {bleu}\n'.format(
@@ -299,7 +322,7 @@ def validate(val_loader, decoder, criterion_ce, criterion_dis):
             top5=top5accs,
             bleu=bleu4))
 
-    return bleu4
+    return bleu4, losses, top5accs
 
 
 if __name__ == '__main__':

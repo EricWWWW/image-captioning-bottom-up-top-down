@@ -2,30 +2,29 @@ import torch.backends.cudnn as cudnn
 import torch.optim
 import torch.utils.data
 import torchvision.transforms as transforms
-from datasets import *
+from data_loader import *
 from utils import *
 from nltk.translate.bleu_score import corpus_bleu
 import torch.nn.functional as F
 from tqdm import tqdm
-from nlgeval import NLGEval
+import pycocoevalcap.eval as E
 
 # Parameters
 data_folder = 'final_dataset'  # folder with data files saved by create_input_files.py
 data_name = 'coco_5_cap_per_img_5_min_word_freq'  # base name shared by data files
-checkpoint_file = 'BEST_34checkpoint_coco_5_cap_per_img_5_min_word_freq.pth.tar'  # model checkpoint
+checkpoint_file = 'checkpoint_coco_5_cap_per_img_5_min_word_freq.pth.tar'  # model checkpoint
 
 word_map_file = 'WORDMAP_coco_5_cap_per_img_5_min_word_freq.json'  # word map, ensure it's the same the data was encoded with and the model was trained with
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # sets device for model and PyTorch tensors
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")  # sets device for model and PyTorch tensors
 cudnn.benchmark = True  # set to true only if inputs to model are fixed size; otherwise lot of computational overhead
 
 # Load model
 torch.nn.Module.dump_patches = True
-checkpoint = torch.load(checkpoint_file,map_location = device)
+checkpoint = torch.load(checkpoint_file, map_location=device)
 decoder = checkpoint['decoder']
 decoder = decoder.to(device)
 decoder.eval()
 
-nlgeval = NLGEval()  # loads the evaluator
 
 # Load word map (word2ix)
 word_map_file = os.path.join(data_folder, 'WORDMAP_' + data_name + '.json')
@@ -33,6 +32,7 @@ with open(word_map_file, 'r') as j:
     word_map = json.load(j)
 rev_word_map = {v: k for k, v in word_map.items()}
 vocab_size = len(word_map)
+
 
 def evaluate(beam_size):
     """
@@ -44,7 +44,7 @@ def evaluate(beam_size):
     # DataLoader
     loader = torch.utils.data.DataLoader(
         CaptionDataset(data_folder, data_name, 'TEST'),
-        batch_size=1, shuffle=True, num_workers=1, pin_memory=torch.cuda.is_available())
+        batch_size=1, shuffle=True, num_workers=0, pin_memory=torch.cuda.is_available())
 
     # Lists to store references (true captions), and hypothesis (prediction) for each image
     # If for n images, we have n hypotheses, and references a, b, c... for each image, we need -
@@ -59,9 +59,9 @@ def evaluate(beam_size):
         k = beam_size
 
         # Move to GPU device, if available
-        image_features = image_features.to(device)  # (1, 3, 256, 256)
+        image_features = image_features.to(device)
         image_features_mean = image_features.mean(1)
-        image_features_mean = image_features_mean.expand(k,2048)
+        image_features_mean = image_features_mean.expand(k, 2048)
 
         # Tensor to store top k previous words at each step; now they're just <start>
         k_prev_words = torch.LongTensor([[word_map['<start>']]] * k).to(device)  # (k, 1)
@@ -85,18 +85,15 @@ def evaluate(beam_size):
         while True:
 
             embeddings = decoder.embedding(k_prev_words).squeeze(1)  # (s, embed_dim)
-            h1,c1 = decoder.top_down_attention(
-                torch.cat([h2,image_features_mean,embeddings], dim=1),
-                (h1,c1))  # (batch_size_t, decoder_dim)
-            attention_weighted_encoding = decoder.attention(image_features,h1)
-            h2,c2 = decoder.language_model(
-                torch.cat([attention_weighted_encoding,h1], dim=1),(h2,c2))
+            h1, c1 = decoder.top_down_attention(torch.cat([h2, image_features_mean, embeddings], dim=1), (h1, c1))  # (batch_size_t, decoder_dim)
+            attention_weighted_encoding = decoder.attention(image_features, h1)
+            h2, c2 = decoder.language_model(torch.cat([attention_weighted_encoding, h1], dim=1), (h2, c2))
 
             scores = decoder.fc(h2)  # (s, vocab_size)
-            scores = F.log_softmax(scores, dim=1)
+            scores = F.log_softmax(scores, dim=1)  # 用log_softmax 可以使概率的乘法变为加法
 
             # Add
-            scores = top_k_scores.expand_as(scores) + scores  # (s, vocab_size)
+            scores = top_k_scores.expand_as(scores) + scores  # (s, vocab_size) 扩展维度  乘法边加法
 
             # For the first step, all k points will have the same scores (since same k previous words, h, c)
             if step == 1:
@@ -149,19 +146,20 @@ def evaluate(beam_size):
             map(lambda c: [rev_word_map[w] for w in c if w not in {word_map['<start>'], word_map['<end>'], word_map['<pad>']}],
                 img_caps))  # remove <start> and pads
         img_caps = [' '.join(c) for c in img_captions]
-        #print(img_caps)
+        # print(img_caps)
         references.append(img_caps)
 
         # Hypotheses
         hypothesis = ([rev_word_map[w] for w in seq if w not in {word_map['<start>'], word_map['<end>'], word_map['<pad>']}])
         hypothesis = ' '.join(hypothesis)
-        #print(hypothesis)
+        # print(hypothesis)
         hypotheses.append(hypothesis)
         assert len(references) == len(hypotheses)
 
     # Calculate scores
-    metrics_dict = nlgeval.compute_metrics(references, hypotheses)
-    return metrics_dict
+    gts = {i: val for i, val in enumerate(references)}
+    res = {i: [val] for i, val in enumerate(hypotheses)}
+    return E.eval(gts,res)
 
 
 if __name__ == '__main__':

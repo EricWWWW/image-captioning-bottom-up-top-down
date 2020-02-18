@@ -8,7 +8,8 @@ from collections import Counter
 from random import seed, choice, sample
 import pickle
 
-def create_input_files(dataset,karpathy_json_path,captions_per_image, min_word_freq,output_folder,max_len=100):
+
+def create_input_files(dataset, karpathy_json_path, captions_per_image, min_word_freq, output_folder, max_len=100):
     """
     Creates input files for training, validation, and test data.
 
@@ -25,13 +26,13 @@ def create_input_files(dataset,karpathy_json_path,captions_per_image, min_word_f
     # Read Karpathy JSON
     with open(karpathy_json_path, 'r') as j:
         data = json.load(j)
-    
-    with open(os.path.join(output_folder,'train36_imgid2idx.pkl'), 'rb') as j:
+
+    with open(os.path.join(output_folder, 'train36_imgid2idx.pkl'), 'rb') as j:
         train_data = pickle.load(j)
-        
-    with open(os.path.join(output_folder,'val36_imgid2idx.pkl'), 'rb') as j:
+
+    with open(os.path.join(output_folder, 'val36_imgid2idx.pkl'), 'rb') as j:
         val_data = pickle.load(j)
-    
+
     # Read image paths and captions for each image
     train_image_captions = []
     val_image_captions = []
@@ -40,7 +41,7 @@ def create_input_files(dataset,karpathy_json_path,captions_per_image, min_word_f
     val_image_det = []
     test_image_det = []
     word_freq = Counter()
-    
+
     for img in data['images']:
         captions = []
         for c in img['sentences']:
@@ -51,25 +52,26 @@ def create_input_files(dataset,karpathy_json_path,captions_per_image, min_word_f
 
         if len(captions) == 0:
             continue
-        
-        image_id = img['filename'].split('_')[2]
-        image_id = int(image_id.lstrip("0").split('.')[0])
+
+        # image_id = img['filename'].split('_')[2]
+        # image_id = int(image_id.lstrip("0").split('.')[0])
+        image_id = img['cocoid']
 
         if img['split'] in {'train', 'restval'}:
             if img['filepath'] == 'train2014':
                 if image_id in train_data:
-                    train_image_det.append(("t",train_data[image_id]))
+                    train_image_det.append(("t", train_data[image_id]))
             else:
                 if image_id in val_data:
-                    train_image_det.append(("v",val_data[image_id]))
+                    train_image_det.append(("v", val_data[image_id]))
             train_image_captions.append(captions)
         elif img['split'] in {'val'}:
             if image_id in val_data:
-                val_image_det.append(("v",val_data[image_id]))
+                val_image_det.append(("v", val_data[image_id]))
             val_image_captions.append(captions)
         elif img['split'] in {'test'}:
             if image_id in val_data:
-                test_image_det.append(("v",val_data[image_id]))
+                test_image_det.append(("v", val_data[image_id]))
             test_image_captions.append(captions)
 
     # Sanity check
@@ -84,31 +86,30 @@ def create_input_files(dataset,karpathy_json_path,captions_per_image, min_word_f
     word_map['<start>'] = len(word_map) + 1
     word_map['<end>'] = len(word_map) + 1
     word_map['<pad>'] = 0
-   
+
     # Create a base/root name for all output files
     base_filename = dataset + '_' + str(captions_per_image) + '_cap_per_img_' + str(min_word_freq) + '_min_word_freq'
-    
+
     # Save word map to a JSON
     with open(os.path.join(output_folder, 'WORDMAP_' + base_filename + '.json'), 'w') as j:
         json.dump(word_map, j)
-        
-    
+
     for impaths, imcaps, split in [(train_image_det, train_image_captions, 'TRAIN'),
                                    (val_image_det, val_image_captions, 'VAL'),
                                    (test_image_det, test_image_captions, 'TEST')]:
         enc_captions = []
         caplens = []
-        
+
         for i, path in enumerate(tqdm(impaths)):
             # Sample captions
             if len(imcaps[i]) < captions_per_image:
                 captions = imcaps[i] + [choice(imcaps[i]) for _ in range(captions_per_image - len(imcaps[i]))]
             else:
                 captions = sample(imcaps[i], k=captions_per_image)
-                
+
             # Sanity check
             assert len(captions) == captions_per_image
-            
+
             for j, c in enumerate(captions):
                 # Encode captions
                 enc_c = [word_map['<start>']] + [word_map.get(word, word_map['<unk>']) for word in c] + [
@@ -119,24 +120,23 @@ def create_input_files(dataset,karpathy_json_path,captions_per_image, min_word_f
 
                 enc_captions.append(enc_c)
                 caplens.append(c_len)
-        
+
         # Save encoded captions and their lengths to JSON files
         with open(os.path.join(output_folder, split + '_CAPTIONS_' + base_filename + '.json'), 'w') as j:
             json.dump(enc_captions, j)
 
         with open(os.path.join(output_folder, split + '_CAPLENS_' + base_filename + '.json'), 'w') as j:
             json.dump(caplens, j)
-    
+
     # Save bottom up features indexing to JSON files
     with open(os.path.join(output_folder, 'TRAIN' + '_GENOME_DETS_' + base_filename + '.json'), 'w') as j:
         json.dump(train_image_det, j)
-        
+
     with open(os.path.join(output_folder, 'VAL' + '_GENOME_DETS_' + base_filename + '.json'), 'w') as j:
         json.dump(val_image_det, j)
-        
+
     with open(os.path.join(output_folder, 'TEST' + '_GENOME_DETS_' + base_filename + '.json'), 'w') as j:
         json.dump(test_image_det, j)
-
 
 
 def init_embedding(embeddings):
@@ -149,7 +149,7 @@ def init_embedding(embeddings):
     torch.nn.init.uniform_(embeddings, -bias, bias)
 
 
-def save_checkpoint(data_name, epoch, epochs_since_improvement,decoder,decoder_optimizer,
+def save_checkpoint(data_name, epoch, epochs_since_improvement, decoder, decoder_optimizer,
                     bleu4, is_best):
     """
     Saves model checkpoint.
