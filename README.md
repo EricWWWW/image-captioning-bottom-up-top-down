@@ -20,7 +20,7 @@ This is a PyTorch implementation of [ Bottom-up and Top-down Attention for Image
     <th>CIDEr</th>
   </tr>
   <tr>
-    <td>[This implementation](https://drive.google.com/file/d/10atC8rY7PdhnKW08INO33mEXYUyQ6G0N/view?usp=sharing)</td>
+    <td>This implementation</td>
     <td>35.9</td>
     <td>26.9</td>
     <td>56.2</td>
@@ -113,7 +113,7 @@ Dropout is set to 0.5. Batch size is set to 100. 36 pretrained bottom-up feature
 
 ##  Evaluation 
 
-To evaluate the model on the karpathy test split, download this [repo](https://github.com/EricWWWW/image-caption-metrics) and config it follow the `README.md`.When finishing,copy the folder `pycocoevalcap` to the root dir of this repo.Then edit the eval.py file to include the model checkpoint location and the `eval.py`
+To evaluate the model on the karpathy test split, download this [repo](https://github.com/EricWWWW/image-caption-metrics) and config it follow the `README.md`. When finishing, copy the folder `pycocoevalcap` to the `root dir of this repo`. Then edit the eval.py file to include the model checkpoint location and the `eval.py`
 
 Beam search is used to generate captions during evaluation. Beam search iteratively considers the set of the k best sentences up to time t as candidates to generate sentences of size t + 1, and keeps only the resulting best k of them. A beam search of five is used for inference.
 
