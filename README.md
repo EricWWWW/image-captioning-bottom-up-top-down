@@ -18,13 +18,23 @@ This is a PyTorch implementation of [ Bottom-up and Top-down Attention for Image
     <th>METEOR</th>
     <th>ROUGE-L</th>
     <th>CIDEr</th>
+    <th>SPICE</th>
+  </tr>
+   <tr>
+    <td>this implementation</td>
+    <td>35.8</td>
+    <td>26.7</td>
+    <td>55.8</td>
+    <td>110.5</td>
+    <td>19.9</td>
   </tr>
   <tr>
-    <td>This implementation</td>
+    <td><a href="https://github.com/poojahira/image-captioning-bottom-up-top-down"> poojahira's implementation</a></td>
     <td>35.9</td>
     <td>26.9</td>
     <td>56.2</td>
     <td>111.5</td>
+    <td>-</td>
   </tr>
   <tr>
     <td>Original paper implementation</td>
@@ -32,6 +42,7 @@ This is a PyTorch implementation of [ Bottom-up and Top-down Attention for Image
     <td>27.0</td>
     <td>56.4</td>
     <td>113.5</td>
+    <td>20.3</td>
     </tr>
 </table>
 
